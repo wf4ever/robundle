@@ -1,0 +1,13 @@
+{
+  "@context": [
+  {  "@base": "widget://bd87cd02-955c-427b-b133-5fa1d2eb22de/" } ,
+  "http://purl.org/wf4ever/ro-bundle/context.json"
+  ],
+  "@type": "ro:ResearchObject",
+  "aggregates": {
+    "file": "@id",
+    "createdBy": {
+      "uri": "@id"
+    }
+  }
+}

@@ -14,8 +14,19 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <scufl2.version>0.11.0</scufl2.version>
+        <jsonld.version>0.1-SNAPSHOT</jsonld.version>
     </properties>
     <dependencies>
+        <dependency>
+            <groupId>com.github.jsonldjava</groupId>
+            <artifactId>jsonld-java</artifactId>
+            <version>${jsonld.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.jsonldjava</groupId>
+            <artifactId>jsonld-java-jena</artifactId>
+            <version>${jsonld.version}</version>
+        </dependency>
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
