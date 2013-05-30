@@ -41,11 +41,148 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public class BundleFileSystemProvider extends FileSystemProvider {
+    public class ByteOrFileChannel implements SeekableByteChannel {
+
+        private static final int MAX_FILE_SIZE_IN_MEMORY = 64;
+        private Path path;
+        private Set<? extends OpenOption> options;
+        private FileAttribute<?>[] attrs;
+        private Path zipPath;
+        private SeekableByteChannel bc;
+
+        private ReadWriteLock rwLock = new ReentrantReadWriteLock();
+        private boolean fileChannel;
+
+        public boolean isOpen() {
+            rwLock.readLock().lock();
+            try {
+                return bc.isOpen();
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public void close() throws IOException {
+            rwLock.readLock().lock();
+            try {
+                bc.close();
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public int read(ByteBuffer dst) throws IOException {
+            rwLock.readLock().lock();
+            try {
+                return bc.read(dst);
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public int write(ByteBuffer src) throws IOException {
+            rwLock.readLock().lock();
+            try {
+                if (position() + src.remaining() > MAX_FILE_SIZE_IN_MEMORY) {
+                    ensureFileChannel();
+                }
+                return bc.write(src);
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        private void ensureFileChannel() throws IOException {
+            if (fileChannel) {
+                return;
+            }
+            rwLock.writeLock().lock();
+            try {
+                if (fileChannel) {
+                    return;
+                }
+                long pos = bc.position();
+                bc.close();
+                openAsFileChannel();
+                bc.position(pos);
+            } finally {
+                rwLock.writeLock().unlock();
+            }
+        }
+
+        public long position() throws IOException {
+            rwLock.readLock().lock();
+            try {
+                return bc.position();
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public SeekableByteChannel position(long newPosition)
+                throws IOException {
+            rwLock.readLock().lock();
+            try {
+                return bc.position(newPosition);
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public long size() throws IOException {
+            rwLock.readLock().lock();
+            try {
+                return bc.size();
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public SeekableByteChannel truncate(long size) throws IOException {
+            rwLock.readLock().lock();
+            try {
+                return bc.truncate(size);
+            } finally {
+                rwLock.readLock().unlock();
+            }
+        }
+
+        public ByteOrFileChannel(Path path, Path zipPath,
+                Set<? extends OpenOption> options, FileAttribute<?>[] attrs)
+                throws IOException {
+            this.path = path;
+            this.zipPath = zipPath;
+            this.options = options;
+            this.attrs = attrs;
+            if (Files.size(zipPath) < 1 * MAX_FILE_SIZE_IN_MEMORY) {
+                openAsByteChannel();
+                fileChannel = false;
+            } else {
+                openAsFileChannel();
+                fileChannel = true;
+            }
+
+        }
+
+        private void openAsByteChannel()
+                throws IOException {
+            bc = origProvider(path).newByteChannel(zipPath, options, attrs);
+        }
+
+        private void openAsFileChannel()
+                throws IOException {
+            bc = origProvider(path).newFileChannel(zipPath, options, attrs);
+        }
+
+    }
+
     public class BundleFileChannel extends FileChannel {
 
         private FileChannel fc;
@@ -126,22 +263,20 @@ public class BundleFileSystemProvider extends FileSystemProvider {
                 throws IOException {
             return fc.tryLock(position, size, shared);
         }
-        
+
         @Override
         protected void implCloseChannel() throws IOException {
-           fc.close();
-           // TODO: Update manifest
+            fc.close();
+            // TODO: Update manifest
         }
 
         public BundleFileChannel(FileChannel fc, Path path,
                 Set<? extends OpenOption> options, FileAttribute<?>[] attrs) {
-                    this.fc = fc;
-                    this.path = path;
-                    this.options = options;
-                    this.attrs = attrs;
+            this.fc = fc;
+            this.path = path;
+            this.options = options;
+            this.attrs = attrs;
         }
-
-
 
     }
 
@@ -234,7 +369,7 @@ public class BundleFileSystemProvider extends FileSystemProvider {
         // useTempFile not needed as we override
         // newByteChannel to use newFileChannel() - which don't
         // consume memory
-        //        options.put("useTempFile", true);
+        // options.put("useTempFile", true);
 
         FileSystem fs = FileSystems.newFileSystem(w, options,
                 BundleFileSystemProvider.class.getClassLoader());
@@ -409,7 +544,7 @@ public class BundleFileSystemProvider extends FileSystemProvider {
         origProvider(source)
                 .copy(fs.unwrap(source), fs.unwrap(target), options);
     }
-    
+
     @Override
     public InputStream newInputStream(Path path, OpenOption... options)
             throws IOException {
@@ -441,7 +576,7 @@ public class BundleFileSystemProvider extends FileSystemProvider {
             }
             if (options.contains(StandardOpenOption.CREATE_NEW)) {
             } else if (options.contains(StandardOpenOption.CREATE)
-                    && ! Files.exists(zipPath)) {
+                    && !Files.exists(zipPath)) {
                 // Workaround for bug in ZIPFS in Java 7 -
                 // it only creates new files on
                 // StandardOpenOption.CREATE_NEW
@@ -453,14 +588,16 @@ public class BundleFileSystemProvider extends FileSystemProvider {
                 // the very same file,
                 // with CREATE_NEW the second thread would then fail.
 
-                EnumSet<StandardOpenOption> opts = EnumSet.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
-                origProvider(path).newFileChannel(zipPath, opts, attrs)
-                        .close();
+                EnumSet<StandardOpenOption> opts = EnumSet
+                        .of(StandardOpenOption.WRITE,
+                                StandardOpenOption.CREATE_NEW);
+                origProvider(path).newFileChannel(zipPath, opts, attrs).close();
 
             }
+            return new ByteOrFileChannel(path, zipPath, options, attrs);
         }
 
-        // Implement by newFileChannel to avoid memory leaks and 
+        // Implement by newFileChannel to avoid memory leaks and
         // allow manifest to be updated
         return newFileChannel(path, options, attrs);
     }
@@ -470,8 +607,8 @@ public class BundleFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options, FileAttribute<?>... attrs)
             throws IOException {
         final BundleFileSystem fs = (BundleFileSystem) path.getFileSystem();
-        FileChannel fc = origProvider(path).newFileChannel(fs.unwrap(path), options,
-                attrs);
+        FileChannel fc = origProvider(path).newFileChannel(fs.unwrap(path),
+                options, attrs);
         return new BundleFileChannel(fc, path, options, attrs);
     }
 
